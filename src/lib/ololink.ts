@@ -320,8 +320,47 @@ export const SCENARIOS: Record<ScenarioId, ScenarioProfile> = {
 
 export const SCENARIO_ORDER: ScenarioId[] = ['clear', 'cloud', 'rain', 'storm'];
 
+/** Rough great-circle separation in degrees. */
+function geoSep(aLat: number, aLon: number, bLat: number, bLon: number) {
+  const dLat = aLat - bLat;
+  const dLon = (aLon - bLon) * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180));
+  return Math.sqrt(dLat * dLat + dLon * dLon);
+}
+
+/** Atmospheric exposure (0-100) of a segment against the active weather field. */
+export function segmentExposure(
+  segment: Segment,
+  weather: WeatherCell[]
+): { exposure: number; cells: WeatherCell[] } {
+  const a = ASSET_BY_ID[segment.from];
+  const b = ASSET_BY_ID[segment.to];
+  if (!a || !b) return { exposure: 0, cells: [] };
+  const midLat = (a.lat + b.lat) / 2;
+  const midLon = (a.lon + b.lon) / 2;
+
+  let exposure = 0;
+  const cells: WeatherCell[] = [];
+  for (const c of weather) {
+    // cell radius expressed in degrees on the surface
+    const radius = 6 + c.size * 55;
+    const d = Math.min(
+      geoSep(a.lat, a.lon, c.lat, c.lon),
+      geoSep(b.lat, b.lon, c.lat, c.lon),
+      geoSep(midLat, midLon, c.lat, c.lon)
+    );
+    if (d > radius) continue;
+    cells.push(c);
+    const falloff = 1 - d / radius;
+    exposure = Math.max(exposure, c.severity * (0.45 + 0.55 * falloff));
+  }
+  return { exposure, cells };
+}
+
 /** Derive per-segment link state for a scenario. */
-export function linkStates(profile: ScenarioProfile): LinkState[] {
+export function linkStates(
+  profile: ScenarioProfile,
+  rerouting?: ReadonlySet<string>
+): LinkState[] {
   const routeSet = new Set<string>();
   for (let i = 0; i < profile.route.length - 1; i++) {
     routeSet.add(`${profile.route[i]}>${profile.route[i + 1]}`);
@@ -329,30 +368,130 @@ export function linkStates(profile: ScenarioProfile): LinkState[] {
 
   return SEGMENTS.map((segment) => {
     const onRoute = routeSet.has(`${segment.from}>${segment.to}`);
-    const blocked = profile.blockedTech.includes(segment.tech);
-    const status: LinkState['status'] = blocked ? 'BLOCKED' : onRoute ? 'ACTIVE' : 'STANDBY';
+    const { exposure, cells } = segmentExposure(segment, profile.weather);
+    const sensitivity = TECH_SENSITIVITY[segment.tech];
+    const impact = Math.round(exposure * sensitivity);
+    const declaredBlock = profile.blockedTech.includes(segment.tech) && impact > 0;
+
+    let status: LinkStatus;
+    if (rerouting?.has(segment.id)) status = 'REROUTING';
+    else if (declaredBlock || impact >= 55) status = 'UNAVAILABLE';
+    else if (impact >= 20) status = onRoute ? 'DEGRADED' : 'DEGRADED';
+    else status = onRoute ? 'ACTIVE' : 'STANDBY';
+
     const optical = TECH_META[segment.tech].family === 'optical';
-    const sev = profile.severity;
-    const bandwidth = optical
-      ? Math.max(0, +(10 - sev * 0.09).toFixed(2))
-      : +(3.4 - sev * 0.012).toFixed(2);
+    const down = status === 'UNAVAILABLE';
+    const base = optical ? 10 : TECH_META[segment.tech].family === 'fiber' ? 8 : 3.4;
+    const bandwidth = down ? 0 : +Math.max(0.1, base * (1 - impact / 130)).toFixed(2);
+
     return {
       segment,
       status,
-      bandwidth: status === 'BLOCKED' ? 0 : bandwidth,
-      latency: Math.round((optical ? 14 : 42) + sev * 0.42),
-      loss: +(status === 'BLOCKED' ? 100 : (optical ? 0.02 : 0.6) + sev * 0.04).toFixed(2),
-      signal: Math.max(0, Math.round((optical ? 98 : 84) - sev * (optical ? 0.85 : 0.42))),
-      weatherImpact: blocked
-        ? 'Blocked by atmospheric obstruction'
-        : sev > 60
-          ? 'Elevated attenuation, margin reduced'
-          : sev > 30
-            ? 'Minor attenuation'
+      bandwidth,
+      latency: Math.round((optical ? 14 : 42) + impact * 0.42 + profile.severity * 0.12),
+      loss: +(down ? 100 : (optical ? 0.02 : 0.6) + impact * 0.05).toFixed(2),
+      signal: Math.max(0, Math.round((optical ? 98 : 88) - impact * (optical ? 0.9 : 0.5))),
+      impact,
+      cells: cells.map((c) => c.name),
+      weatherImpact: down
+        ? cells.length
+          ? `Path obstructed by ${cells[0]!.name}`
+          : 'Transport unavailable under current conditions'
+        : impact >= 20
+          ? `Attenuation from ${cells[0]?.name ?? 'atmospheric layer'}, margin reduced`
+          : impact > 0
+            ? 'Minor attenuation, within margin'
             : 'No measurable impact',
     };
   });
 }
+
+/** Decision context assembled for one asset — what the operator must reason about. */
+export interface AssetContext {
+  asset: Asset;
+  onRoute: boolean;
+  links: LinkState[];
+  active: LinkState[];
+  impaired: LinkState[];
+  standby: LinkState[];
+  exposure: number;
+  cells: string[];
+  decisions: { title: string; detail: string; confidence: number; state: 'HELD' | 'APPLIED' | 'PENDING' }[];
+  recommendations: string[];
+  alerts: { id: string; level: 'INFO' | 'WARN' | 'CRITICAL'; text: string }[];
+}
+
+export function assetContext(
+  assetId: string,
+  profile: ScenarioProfile,
+  links: LinkState[]
+): AssetContext | null {
+  const asset = ASSET_BY_ID[assetId];
+  if (!asset) return null;
+  const related = links.filter((l) => l.segment.from === assetId || l.segment.to === assetId);
+  const active = related.filter((l) => l.status === 'ACTIVE' || l.status === 'REROUTING');
+  const impaired = related.filter((l) => l.status === 'DEGRADED' || l.status === 'UNAVAILABLE');
+  const standby = related.filter((l) => l.status === 'STANDBY');
+  const onRoute = profile.route.includes(assetId);
+
+  const cells = Array.from(new Set(related.flatMap((l) => l.cells)));
+  const exposure = related.reduce((m, l) => Math.max(m, l.impact), 0);
+
+  const decisions: AssetContext['decisions'] = [];
+  if (onRoute) {
+    decisions.push({
+      title: `${asset.name} retained on primary path`,
+      detail: `Orchestrator selected this node for the ${profile.systemMode.toLowerCase()} path. ${profile.ai.action}.`,
+      confidence: profile.ai.confidence,
+      state: profile.severity > 30 ? 'APPLIED' : 'HELD',
+    });
+  } else {
+    decisions.push({
+      title: `${asset.name} held in reserve`,
+      detail: `Not required by the current path. Retained as failover capacity for ${asset.region}.`,
+      confidence: Math.max(60, profile.ai.confidence - 12),
+      state: 'HELD',
+    });
+  }
+  if (impaired.length) {
+    decisions.push({
+      title: `${impaired.length} transport${impaired.length > 1 ? 's' : ''} impaired`,
+      detail: impaired
+        .map((l) => `${TECH_META[l.segment.tech].short} ${l.status.toLowerCase()} (${l.impact}% impact)`)
+        .join(' · '),
+      confidence: 92,
+      state: 'APPLIED',
+    });
+  }
+  if (standby.length) {
+    decisions.push({
+      title: `${standby.length} alternative path${standby.length > 1 ? 's' : ''} pre-computed`,
+      detail: standby.map((l) => TECH_META[l.segment.tech].short).join(' · ') + ' available for immediate cutover.',
+      confidence: 88,
+      state: 'PENDING',
+    });
+  }
+
+  const recommendations: string[] = [];
+  if (impaired.some((l) => l.status === 'UNAVAILABLE')) {
+    const fallback = standby[0] ?? related.find((l) => l.status === 'DEGRADED');
+    recommendations.push(
+      fallback
+        ? `Shift traffic to ${TECH_META[fallback.segment.tech].short} via ${ASSET_BY_ID[fallback.segment.to === assetId ? fallback.segment.from : fallback.segment.to]?.name}`
+        : 'No local fallback — escalate to constellation-level reroute'
+    );
+  }
+  if (exposure >= 20 && exposure < 55) recommendations.push('Reduce modulation order, hold link with reduced capacity');
+  if (asset.health === 'DEGRADED') recommendations.push(`Schedule maintenance window for ${asset.name}`);
+  if (recommendations.length === 0) recommendations.push('No action required — hold current configuration');
+
+  const alerts = profile.alerts.filter(
+    (a) => a.text.toLowerCase().includes(asset.region.toLowerCase()) || onRoute
+  );
+
+  return { asset, onRoute, links: related, active, impaired, standby, exposure, cells, decisions, recommendations, alerts };
+}
+
 
 /** Ordered segments (in route direction) for a given asset-id chain. */
 export function routeSegments(route: string[]): Segment[] {
