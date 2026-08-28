@@ -784,9 +784,58 @@ function WeatherBlob({ cell }: { cell: WeatherCell }) {
           depthWrite={false}
         />
       </mesh>
+      <AffectedFootprint cell={cell} color={color} />
     </group>
   );
 }
+
+/** Ground footprint of a weather cell — the area operators must route around. */
+function AffectedFootprint({ cell, color }: { cell: WeatherCell; color: string }) {
+  const position = useMemo(
+    () => new THREE.Vector3(...geoToVec(cell.lat, cell.lon, 0)).multiplyScalar(1.002),
+    [cell]
+  );
+  const quat = useMemo(() => {
+    const q = new THREE.Quaternion();
+    q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), position.clone().normalize());
+    return q;
+  }, [position]);
+  const ring = useRef<THREE.Mesh>(null);
+  const r = cell.size * 0.62;
+
+  useFrame(({ clock }) => {
+    if (!ring.current) return;
+    const p = (clock.elapsedTime * 0.4 + cell.lon * 0.01) % 1;
+    ring.current.scale.setScalar(0.6 + p * 0.6);
+    (ring.current.material as THREE.MeshBasicMaterial).opacity = (1 - p) * 0.45;
+  });
+
+  return (
+    <group position={position.clone().sub(new THREE.Vector3(...geoToVec(cell.lat, cell.lon, 4)))} quaternion={quat}>
+      <mesh>
+        <ringGeometry args={[r * 0.92, r, 64]} />
+        <meshBasicMaterial
+          color={color}
+          transparent
+          opacity={0.3}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh ref={ring}>
+        <ringGeometry args={[r * 0.96, r, 64]} />
+        <meshBasicMaterial
+          color={color}
+          transparent
+          opacity={0.3}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 
 /* --------------------------------------------------------- camera focus */
 
