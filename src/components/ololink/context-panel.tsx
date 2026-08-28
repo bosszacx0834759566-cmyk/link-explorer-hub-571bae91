@@ -15,6 +15,7 @@ import {
   type AssetKind,
 } from '@/lib/ololink';
 import { RAIL_ITEMS } from '@/components/ololink/rail';
+import { DecisionPanel } from '@/components/ololink/decision-panel';
 import type { OloLinkState, RailId } from '@/hooks/use-ololink';
 
 const KIND_ORDER: AssetKind[] = ['satellite', 'haps', 'drone', 'ground', 'customer'];
@@ -228,14 +229,16 @@ function OverviewPanel({ state }: { state: OloLinkState }) {
 
 function TopologyPanel({ state }: { state: OloLinkState }) {
   const active = state.links.filter((l) => l.status === 'ACTIVE');
-  const blocked = state.links.filter((l) => l.status === 'BLOCKED');
+  const blocked = state.links.filter((l) => l.status === 'UNAVAILABLE');
+  const degraded = state.links.filter((l) => l.status === 'DEGRADED');
   return (
     <div>
       <Section title="Topology health">
         <Row label="Segments total" value={String(state.links.length)} />
         <Row label="Active" value={String(active.length)} tone="text-emerald-300" />
-        <Row label="Standby" value={String(state.links.length - active.length - blocked.length)} tone="text-sky-300" />
-        <Row label="Blocked" value={String(blocked.length)} tone="text-rose-300" />
+        <Row label="Degraded" value={String(degraded.length)} tone="text-amber-300" />
+        <Row label="Standby" value={String(state.links.length - active.length - blocked.length - degraded.length)} tone="text-sky-300" />
+        <Row label="Unavailable" value={String(blocked.length)} tone="text-rose-300" />
       </Section>
       <Section title="Layer utilisation">
         <div className="space-y-3">
@@ -292,9 +295,13 @@ function LinksPanel({ state }: { state: OloLinkState }) {
                   'font-mono text-[9px] uppercase tracking-[0.14em]',
                   l.status === 'ACTIVE'
                     ? 'text-emerald-400'
-                    : l.status === 'BLOCKED'
+                    : l.status === 'UNAVAILABLE'
                       ? 'text-rose-400'
-                      : 'text-muted-foreground'
+                      : l.status === 'DEGRADED'
+                        ? 'text-amber-400'
+                        : l.status === 'REROUTING'
+                          ? 'text-sky-300'
+                          : 'text-muted-foreground'
                 )}
               >
                 {l.status}
@@ -721,11 +728,29 @@ const PANELS: Record<RailId, (p: { state: OloLinkState }) => React.ReactElement>
   analytics: AnalyticsPanel,
   alerts: AlertsPanel,
   settings: SettingsPanel,
+  context: DecisionPanel,
 };
 
 export function ContextPanel({ state }: { state: OloLinkState }) {
   const id = state.panel;
-  const item = RAIL_ITEMS.find((r) => r.id === id);
+  const selectedAsset =
+    state.selection?.type === 'asset'
+      ? ASSET_BY_ID[state.selection.id]
+      : state.selection
+        ? ASSET_BY_ID[
+            state.links.find((l) => l.segment.id === state.selection!.id)?.segment.from ?? ''
+          ]
+        : undefined;
+  const item =
+    id === 'context'
+      ? {
+          id: 'context' as RailId,
+          label: selectedAsset ? selectedAsset.name : 'Context',
+          hint: selectedAsset
+            ? `${KIND_META[selectedAsset.kind].label} · ${selectedAsset.region} · decisions & routing`
+            : 'Selection context',
+        }
+      : RAIL_ITEMS.find((r) => r.id === id);
   const Body = id ? PANELS[id] : null;
 
   return (
@@ -748,7 +773,10 @@ export function ContextPanel({ state }: { state: OloLinkState }) {
             </div>
             <button
               type="button"
-              onClick={() => state.setPanel(null)}
+              onClick={() => {
+              if (id === 'context') state.select(null);
+              state.setPanel(null);
+            }}
               aria-label="Close panel"
               className="rounded p-1 text-muted-foreground/70 transition-colors hover:text-foreground"
             >

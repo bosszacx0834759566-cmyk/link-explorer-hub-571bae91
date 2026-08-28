@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { X, Crosshair, ArrowDown } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { ASSET_BY_ID, KIND_META, TECH_META, type LinkState, type Segment } from '@/lib/ololink';
+import { ASSET_BY_ID, KIND_META, STATUS_META, TECH_META, type LinkState, type Segment } from '@/lib/ololink';
 import type { OloLinkState } from '@/hooks/use-ololink';
 
 function Line({ label, value, tone }: { label: string; value: string; tone?: string | undefined }) {
@@ -140,7 +140,7 @@ function LinkBody({ link, state }: { link: LinkState; state: OloLinkState }) {
       <Line
         label="Route status"
         value={link.status}
-        tone={link.status === 'ACTIVE' ? 'text-emerald-300' : link.status === 'BLOCKED' ? 'text-rose-300' : 'text-sky-300'}
+        tone={STATUS_META[link.status].tone}
       />
       <Line label="Bandwidth" value={`${link.bandwidth.toFixed(2)} Gbps`} />
       <Line label="Latency" value={`${link.latency} ms`} />
