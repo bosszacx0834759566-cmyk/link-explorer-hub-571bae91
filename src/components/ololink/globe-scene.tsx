@@ -341,22 +341,37 @@ function LinkPath({
   const curve = useMemo(() => curveForSegment(link.segment), [link.segment]);
   const points = usePoints(curve, 64);
   const active = link.status === 'ACTIVE';
-  const blocked = link.status === 'BLOCKED';
+  const degraded = link.status === 'DEGRADED';
+  const rerouting = link.status === 'REROUTING';
+  const blocked = link.status === 'UNAVAILABLE';
   const strength = highlighted || selected ? 1.35 : onRoute ? 1 : 0.75;
 
   return (
     <group>
-      {active ? (
-        meta.family === 'optical' ? (
-          <OpticalBeam curve={curve} color={meta.color} strength={strength} />
-        ) : meta.family === 'fiber' ? (
-          <FiberRun curve={curve} color={meta.color} strength={strength} />
-        ) : (
-          <RadioWave curve={curve} color={meta.color} strength={strength} />
-        )
+      {active || rerouting || degraded ? (
+        <group>
+          {meta.family === 'optical' ? (
+            <OpticalBeam
+              curve={curve}
+              color={rerouting ? '#e0f2fe' : degraded ? '#fbbf24' : meta.color}
+              strength={degraded ? strength * 0.55 : strength}
+            />
+          ) : meta.family === 'fiber' ? (
+            <FiberRun curve={curve} color={rerouting ? '#e0f2fe' : meta.color} strength={strength} />
+          ) : (
+            <RadioWave
+              curve={curve}
+              color={rerouting ? '#e0f2fe' : degraded ? '#fbbf24' : meta.color}
+              strength={degraded ? strength * 0.6 : strength}
+            />
+          )}
+          {degraded && (
+            <DashedLine points={points} color="#fbbf24" opacity={0.32} dash={0.04} gap={0.03} />
+          )}
+        </group>
       ) : blocked ? (
         <group>
-          <DashedLine points={points} color="#fb7185" opacity={selected ? 0.4 : 0.16} />
+          <DashedLine points={points} color="#fb7185" opacity={selected ? 0.45 : 0.2} />
           <mesh position={curve.getPointAt(0.5)}>
             <sphereGeometry args={[0.006, 8, 8]} />
             <meshBasicMaterial color="#fb7185" transparent opacity={selected ? 0.8 : 0.35} />
@@ -370,6 +385,7 @@ function LinkPath({
           dash={0.05}
           gap={0.05}
         />
+
       )}
 
       {/* generous click target */}
