@@ -127,15 +127,39 @@ export const ASSET_BY_ID: Record<string, Asset> = Object.fromEntries(
   ASSETS.map((a) => [a.id, a])
 );
 
+export type LinkStatus = 'ACTIVE' | 'DEGRADED' | 'UNAVAILABLE' | 'REROUTING' | 'STANDBY';
+
+export const STATUS_META: Record<LinkStatus, { label: string; color: string; tone: string }> = {
+  ACTIVE: { label: 'Active', color: '#34d399', tone: 'text-emerald-300' },
+  DEGRADED: { label: 'Degraded', color: '#fbbf24', tone: 'text-amber-300' },
+  UNAVAILABLE: { label: 'Unavailable', color: '#fb7185', tone: 'text-rose-300' },
+  REROUTING: { label: 'Rerouting', color: '#e0f2fe', tone: 'text-sky-200' },
+  STANDBY: { label: 'Standby', color: '#64748b', tone: 'text-slate-300' },
+};
+
+/** How strongly each transport is affected by atmospheric conditions. */
+export const TECH_SENSITIVITY: Record<Tech, number> = {
+  OPTICAL: 1,
+  FSO: 0.72,
+  MICROWAVE: 0.38,
+  RF: 0.22,
+  FIBER: 0,
+};
+
 export interface LinkState {
   segment: Segment;
-  status: 'ACTIVE' | 'STANDBY' | 'BLOCKED';
+  status: LinkStatus;
   bandwidth: number;
   latency: number;
   loss: number;
   signal: number;
+  /** 0-100 atmospheric impact on this specific segment */
+  impact: number;
   weatherImpact: string;
+  /** weather cells intersecting this segment */
+  cells: string[];
 }
+
 
 function seg(id: string, from: string, to: string, tech: Tech): Segment {
   return { id, from, to, tech };
