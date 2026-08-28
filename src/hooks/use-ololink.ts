@@ -19,7 +19,8 @@ export type RailId =
   | 'intel'
   | 'analytics'
   | 'alerts'
-  | 'settings';
+  | 'settings'
+  | 'context';
 
 export interface Selection {
   type: 'asset' | 'link';
@@ -62,6 +63,8 @@ export interface OloLinkState {
   /** route that was just replaced by the AI (fades out in the scene) */
   previousRoute: Segment[] | null;
   rerouteSeq: number;
+  /** segment ids currently animating through an adaptive reroute */
+  reroutingIds: Set<string>;
   missionTime: number;
   events: EventEntry[];
   panel: RailId | null;
@@ -89,6 +92,7 @@ export function useOloLink(): OloLinkState {
   const [running, setRunning] = useState(true);
   const [previousRoute, setPreviousRoute] = useState<Segment[] | null>(null);
   const [rerouteSeq, setRerouteSeq] = useState(0);
+  const [reroutingIds, setReroutingIds] = useState<Set<string>>(new Set());
   const [layers, setLayers] = useState({ weather: true, orbits: true, labels: true, routes: true });
   const [techFilter, setTechFilter] = useState<Record<Tech, boolean>>({
     OPTICAL: true,
@@ -161,11 +165,14 @@ export function useOloLink(): OloLinkState {
       setAiProcessing(true);
       push('INFO', `Weather state change → ${SCENARIOS[id].name}`);
       const outgoing = routeSegments(SCENARIOS[scenarioId].route);
+      const incoming = routeSegments(SCENARIOS[id].route);
+      setReroutingIds(new Set([...outgoing, ...incoming].map((s) => s.id)));
       setTimeout(() => {
         setPreviousRoute(outgoing);
         setRerouteSeq((n) => n + 1);
         setScenarioId(id);
         setAiProcessing(false);
+        setTimeout(() => setReroutingIds(new Set()), 2600);
         push(
           SCENARIOS[id].severity > 60 ? 'ALERT' : 'OK',
           `AI decision: ${SCENARIOS[id].ai.action.toLowerCase()}`
@@ -175,7 +182,7 @@ export function useOloLink(): OloLinkState {
     [scenarioId, push]
   );
 
-  const links = useMemo(() => linkStates(profile), [profile]);
+  const links = useMemo(() => linkStates(profile, reroutingIds), [profile, reroutingIds]);
   const route = useMemo(() => routeSegments(profile.route), [profile]);
 
   // clear the ghost of the replaced route once it has finished fading
@@ -193,6 +200,7 @@ export function useOloLink(): OloLinkState {
     route,
     previousRoute,
     rerouteSeq,
+    reroutingIds,
     missionTime,
     events,
     panel,
@@ -205,7 +213,15 @@ export function useOloLink(): OloLinkState {
     setScenario,
     setPanel,
     togglePanel: (id) => setPanel((p) => (p === id ? null : id)),
-    select: setSelection,
+    select: (s) => {
+      setSelection(s);
+      if (s) {
+        setPanel((p) => (p === null || p === 'context' ? 'context' : p));
+        push('INFO', `Inspector focus: ${s.type === 'asset' ? s.id : `link ${s.id}`}`);
+      } else {
+        setPanel((p) => (p === 'context' ? null : p));
+      }
+    },
     toggleLayer: (k) => setLayers((l) => ({ ...l, [k]: !l[k] })),
     setRunning,
     approve: () => push('OK', `Operator approved: ${profile.ai.action}`),
